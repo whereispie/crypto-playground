@@ -1,0 +1,168 @@
+package com.siemens.t.cm500.pgtimescale.blockchain
+
+import java.security.*
+import java.util.*
+import kotlin.random.Random
+
+data class Transaction(
+  val sender: PublicKey,
+  val recipient: PublicKey,
+  val amount: Int,
+  val signature: ByteArray
+) {
+  fun verifySignature(): Boolean {
+    val data =
+        "${sender.encoded.contentToString()}${recipient.encoded.contentToString()}$amount".toByteArray()
+    val signatureInstance = Signature.getInstance("SHA256withECDSA")
+    signatureInstance.initVerify(sender)
+    signatureInstance.update(data)
+    return signatureInstance.verify(signature)
+  }
+}
+
+data class Block(
+  val index: Int,
+  val timestamp: Long,
+  val transactions: List<Transaction>,
+  val previousHash: String,
+  val validator: PublicKey
+) {
+  val hash = calculateHash()
+
+  private fun calculateHash(): String {
+    val data =
+        "$index$timestamp${transactions.hashCode()}$previousHash${validator.encoded.contentToString()}"
+    val bytes = MessageDigest.getInstance("SHA-256").digest(data.toByteArray())
+    return Base64.getEncoder().encodeToString(bytes)
+  }
+}
+
+class Wallet {
+  private val keyPair: KeyPair = generateKeyPair()
+
+  val publicKey: PublicKey
+    get() = keyPair.public
+
+  private val privateKey: PrivateKey
+    get() = keyPair.private
+
+  fun signTransaction(transaction: Transaction): ByteArray {
+    val data =
+        "${transaction.sender.encoded.contentToString()}${transaction.recipient.encoded.contentToString()}${transaction.amount}".toByteArray()
+    val signatureInstance = Signature.getInstance("SHA256withECDSA")
+    signatureInstance.initSign(privateKey)
+    signatureInstance.update(data)
+    return signatureInstance.sign()
+  }
+
+  private fun generateKeyPair(): KeyPair {
+    val keyGen = KeyPairGenerator.getInstance("EC")
+    keyGen.initialize(256, SecureRandom())
+    return keyGen.generateKeyPair()
+  }
+}
+
+class Blockchain {
+  val chain = mutableListOf<Block>()
+  private val balances = mutableMapOf<PublicKey, Int>()
+  private val stakedAmounts = mutableMapOf<PublicKey, Int>()
+  private val reward = 10
+
+  private val genesisWallet = Wallet()
+  private val defaultStakeAmount = 32 // Equivalent to 32 ETH as a default stake
+
+  init {
+    // Genesis block
+    chain.add(Block(0, System.currentTimeMillis(), emptyList(), "0", genesisWallet.publicKey))
+    balances[genesisWallet.publicKey] = 1000
+    stakedAmounts[genesisWallet.publicKey] = defaultStakeAmount
+  }
+
+  fun addTransaction(transaction: Transaction): Boolean {
+    if (transaction.verifySignature() && balances.getOrDefault(
+            transaction.sender,
+            0) >= transaction.amount
+    ) {
+      balances[transaction.sender] =
+          balances.getOrDefault(transaction.sender, 0) - transaction.amount
+      balances[transaction.recipient] =
+          balances.getOrDefault(transaction.recipient, 0) + transaction.amount
+      pendingTransactions.add(transaction)
+      return true
+    }
+    return false
+  }
+
+  fun stake(wallet: Wallet, amount: Int) {
+    if (balances.getOrDefault(wallet.publicKey, 0) >= amount) {
+      stakedAmounts[wallet.publicKey] = stakedAmounts.getOrDefault(wallet.publicKey, 0) + amount
+      balances[wallet.publicKey] = balances.getOrDefault(wallet.publicKey, 0) - amount
+    }
+  }
+
+  fun createNewBlock() {
+    val validator = selectValidator()
+    val newBlock = Block(
+        chain.size,
+        System.currentTimeMillis(),
+        pendingTransactions.toList(),
+        chain.last().hash,
+        validator)
+    chain.add(newBlock)
+    balances[validator] = balances.getOrDefault(validator, 0) + reward
+    pendingTransactions.clear()
+  }
+
+  private fun selectValidator(): PublicKey {
+    val totalStake = stakedAmounts.values.sum()
+    if (totalStake == 0) {
+      return genesisWallet.publicKey
+    }
+
+    var randomPoint = Random.nextInt(totalStake)
+    for ((validator, stake) in stakedAmounts) {
+      if (randomPoint < stake) return validator
+      randomPoint -= stake
+    }
+
+    // Fallback, should not occur
+    return genesisWallet.publicKey
+  }
+
+  private val pendingTransactions = mutableListOf<Transaction>()
+
+  fun printChain() {
+    chain.forEach { println(it) }
+  }
+
+  fun printBalances() {
+    balances.forEach { (key, value) -> println("${key.encoded.contentToString()}: $value") }
+  }
+}
+
+fun main() {
+  val blockchain = Blockchain()
+
+  // Create wallets
+  val walletA = Wallet()
+  val walletB = Wallet()
+
+  // Initial funds for demonstration
+  blockchain.stake(walletA, 100)
+  blockchain.stake(walletB, 50)
+
+  // Create transactions
+  val transaction1 = Transaction(
+      walletA.publicKey,
+      walletB.publicKey,
+      10,
+      walletA.signTransaction(Transaction(walletA.publicKey, walletB.publicKey, 10, ByteArray(0))))
+  blockchain.addTransaction(transaction1)
+
+  // Create a new block
+  blockchain.createNewBlock()
+
+  // Print the blockchain and balances
+  blockchain.printChain()
+  blockchain.printBalances()
+}
